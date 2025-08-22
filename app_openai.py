@@ -24,7 +24,7 @@ if "history" not in st.session_state:
 # --- 3) 사이드바: 프롬프트/초기화 ---
 with st.sidebar:
     clear = st.button("대화내용 초기화")
-    default_sys = "You are a helpful assistant. Answer concisely and directly."
+    default_sys = "You are a helpful assistant. Answer concisely and directly. Avoid repetition."
     system_prompt = st.text_area("시스템 프롬프트", value=default_sys, height=120)
 
 if clear:
@@ -40,29 +40,51 @@ if user_in := st.chat_input("메시지를 입력하세요"):
     st.session_state.history.append(("user", user_in))
     st.chat_message("user").write(user_in)
 
-    # 스트리밍 영역
     msg = st.chat_message("assistant")
     placeholder = msg.empty()
     collected = []
 
     # 메시지 배열 구성 (system 포함)
-    messages = [{"role":"system","content":system_prompt}] + [
-        {"role":r, "content":c} for r, c in st.session_state.history
+    messages = [{"role": "system", "content": system_prompt}] + [
+        {"role": r, "content": c} for r, c in st.session_state.history
     ]
 
-    stream = st.session_state.client.chat.completions.create(
-        model=MODEL,
-        messages=messages,
-        temperature=0.2,
-        max_tokens=512,
-        stream=True,
-    )
+    try:
+        stream = st.session_state.client.chat.completions.create(
+            model=MODEL,
+            messages=messages,
+            temperature=0.2,     # 장황·반복 방지
+            max_tokens=512,
+            top_p=0.9,
+            frequency_penalty=0.6,
+            presence_penalty=0.2,
+            stream=True,
+            # timeout=60,        # 필요 시 주석 해제
+        )
 
-    for chunk in stream:
-        delta = chunk.choices[0].delta.content or ""
-        if delta:
-            collected.append(delta)
+        for chunk in stream:
+            # --- 방탄 처리 ---
+            choices = getattr(chunk, "choices", None) or []
+            if not choices:
+                continue
+            c0 = choices[0]
+
+            # 최종 청크(finish_reason 존재)면 종료
+            if getattr(c0, "finish_reason", None) is not None:
+                break
+
+            delta = getattr(c0, "delta", None)
+            text  = getattr(delta, "content", None) if delta is not None else None
+            if not text:
+                continue
+
+            collected.append(text)
             placeholder.markdown("".join(collected))
 
-    full = "".join(collected).strip()
-    st.session_state.history.append(("assistant", full))
+        full = "".join(collected).strip() or "_(빈 응답)_"
+        st.session_state.history.append(("assistant", full))
+        if full:
+            placeholder.markdown(full)
+
+    except Exception as e:
+        placeholder.error(f"요청 중 오류가 발생했습니다: {e}")
